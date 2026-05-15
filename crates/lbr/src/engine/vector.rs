@@ -2,15 +2,16 @@
 //!
 //! Given target weights W (T, N) and prices, simulate the equity curve:
 //!   r_t       = price_t / price_{t-1} - 1
-//!   pnl_t     = sum_j W_{t-1, j} * r_{t, j}              ← lag-1 weight
-//!   turnover  = sum_j | W_{t, j} - W_{t-1, j} |
-//!   cost_t    = turnover * (commission_bps + slippage_bps)
-//!   equity_t  = equity_{t-1} * (1 + pnl_t - cost_t)
+//!   pnl_t     = W_{t-1, :} · r_{t, :}                    ← dot product
+//!   turnover  = || W_{t, :} - W_{t-1, :} ||_1
+//!   cost_t    = turnover · (commission_bps + slippage_bps) / 10_000
+//!   equity_t  = equity_{t-1} · (1 + pnl_t - cost_t)
 //!
-//! Operates entirely on ndarray — no per-bar loops in user code.
+//! The hot path is a row-wise dot product + L1 norm via ndarray — no per-symbol
+//! scalar loop, so auto-vectorization (SSE/AVX) kicks in on release builds.
 
 use anyhow::Result;
-use ndarray::Array1;
+use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 use std::sync::Arc;
 
@@ -44,43 +45,41 @@ impl VectorEngine {
     }
 }
 
+/// Replace NaN values with 0.0 so they're neutral in dot products.
+fn nan_to_zero(mut a: Array2<f64>) -> Array2<f64> {
+    a.mapv_inplace(|v| if v.is_finite() { v } else { 0.0 });
+    a
+}
+
 pub fn run(engine: &VectorEngine, panel: &Panel, strategy: &dyn Strategy) -> BacktestResult {
-    let weights = strategy.target_weights(panel);
+    let mut weights = strategy.target_weights(panel);
+    weights.mapv_inplace(|v| if v.is_finite() { v } else { 0.0 });
+
     let prices = if panel.adj_close.iter().any(|v| v.is_finite()) {
         &panel.adj_close
     } else {
         &panel.close
     };
-    let returns = indicators::returns_axis0(prices);
-    let (t, n) = weights.dim();
+    let returns = nan_to_zero(indicators::returns_axis0(prices));
 
+    let (t, n) = weights.dim();
     let mut equity = Array1::from_elem(t, engine.starting_cash);
-    let mut prev_w = Array1::from_elem(n, 0.0);
+    let mut prev_w = Array1::zeros(n);
     let cost_rate = (engine.cost.commission_bps + engine.cost.slippage_bps) / 10_000.0;
 
     for i in 1..t {
-        // PnL is yesterday's weight × today's return
-        let mut pnl = 0.0;
-        for j in 0..n {
-            let w = prev_w[j];
-            if w == 0.0 {
-                continue;
-            }
-            let r = returns[(i, j)];
-            if r.is_finite() {
-                pnl += w * r;
-            }
-        }
-        // Apply today's rebalance and accrue cost
-        let mut turnover = 0.0;
-        for j in 0..n {
-            let w = weights[(i, j)];
-            let w = if w.is_finite() { w } else { 0.0 };
-            turnover += (w - prev_w[j]).abs();
-            prev_w[j] = w;
-        }
-        let cost = turnover * cost_rate;
-        equity[i] = equity[i - 1] * (1.0 + pnl - cost);
+        // Vectorized PnL: yesterday's weights · today's returns.
+        let r_row = returns.row(i);
+        let pnl = prev_w.dot(&r_row);
+
+        // Vectorized turnover: L1 norm of weight delta.
+        let w_row = weights.row(i);
+        let mut diff = &w_row - &prev_w;
+        diff.mapv_inplace(f64::abs);
+        let turnover = diff.sum();
+
+        equity[i] = equity[i - 1] * (1.0 + pnl - turnover * cost_rate);
+        prev_w.assign(&w_row);
     }
 
     let m = compute(&equity);

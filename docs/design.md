@@ -170,9 +170,11 @@ stable. PRs and pushes to `main` trigger the workflow.
 
 ## Repo discipline
 
-- Public: framework code, public example, CI, README, this design doc.
-- Private (gitignored): tuned strategy configs (`configs/s002*.yaml`),
-  any private example referencing them, the Parquet/CSV data lake, results.
+- Public: platform code (`lbr`, `lbr-cli`), CI, README, this design doc.
+- Private (gitignored): **all** strategy code lives under `/private/` or
+  in a separate private repo — including generic strategy frameworks like
+  mean-reversion. The public platform has zero knowledge of any strategy.
+- Also gitignored: tuned configs (`configs/s002*.yaml`), data lake, results.
 
 ## Future (v0.2+)
 

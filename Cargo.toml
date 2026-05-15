@@ -2,9 +2,12 @@
 resolver = "2"
 members = [
     "crates/lbr",
-    "crates/lbr-strategies",
     "crates/lbr-cli",
 ]
+# Private strategy crates live under `private/` and are NOT part of the
+# public workspace. They are git-ignored and intended to be developed
+# locally or in a private repo.
+exclude = ["private"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,7 +19,6 @@ authors = ["victor000000"]
 [workspace.dependencies]
 # Internal crates
 lbr = { path = "crates/lbr" }
-lbr-strategies = { path = "crates/lbr-strategies" }
 
 # External
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time"] }
@@ -40,3 +42,7 @@ approx = "0.5"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+# To enable native CPU SIMD (AVX2/AVX-512 if your CPU supports it), build with:
+#   RUSTFLAGS="-C target-cpu=native" cargo build --release
+# We keep the default portable here so artifacts remain transferable.

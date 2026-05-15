@@ -13,10 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 lbr = { workspace = true }
-lbr-strategies = { workspace = true }
 tokio = { workspace = true }
-serde = { workspace = true }
-serde_yaml = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }

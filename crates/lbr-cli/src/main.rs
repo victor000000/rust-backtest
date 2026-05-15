@@ -1,4 +1,8 @@
-//! `lbr` CLI — ingest, list, and run vector backtests.
+//! `lbr` CLI — strategy-agnostic data driver for the platform.
+//!
+//! The public CLI handles data ingest and panel inspection. Running a
+//! strategy requires a separate binary that depends on `lbr` and a private
+//! strategy crate of your own — the platform stays strategy-free.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -7,14 +11,13 @@ use std::sync::Arc;
 use time::Date;
 use time::macros::format_description;
 
-use lbr::config::CostConfig;
 use lbr::data::{self, Panel};
-use lbr::engine::{VectorEngine, run};
-use lbr::metrics::pretty;
-use lbr_strategies::{MeanRevCfg, MeanRevStrategy};
 
 #[derive(Parser, Debug)]
-#[command(name = "lbr", about = "Local vectorized backtest in Rust")]
+#[command(
+    name = "lbr",
+    about = "Local vectorized backtest in Rust — data driver"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -22,7 +25,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Pull daily bars from Yahoo and write them to the local cache.
+    /// Pull daily bars from Yahoo Finance and cache them locally.
     Ingest {
         /// Symbols, comma-separated (e.g. SPY,QQQ,IWM).
         #[arg(long)]
@@ -37,23 +40,14 @@ enum Cmd {
         #[arg(long, default_value = "data/lake")]
         cache: PathBuf,
     },
-    /// Run a backtest from a YAML strategy config.
-    Run {
-        /// Path to a strategy YAML config.
+    /// Inspect a cached panel: rows, columns, date range.
+    Show {
+        /// Symbols, comma-separated (e.g. SPY,QQQ,IWM).
         #[arg(long)]
-        cfg: PathBuf,
+        symbols: String,
         /// Cache directory.
         #[arg(long, default_value = "data/lake")]
         cache: PathBuf,
-        /// Starting cash.
-        #[arg(long, default_value_t = 70_000.0)]
-        cash: f64,
-        /// Commission in basis points per side.
-        #[arg(long, default_value_t = 0.0)]
-        commission_bps: f64,
-        /// Slippage in basis points per turnover unit.
-        #[arg(long, default_value_t = 0.0)]
-        slippage_bps: f64,
     },
 }
 
@@ -101,49 +95,30 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Run {
-            cfg,
-            cache,
-            cash,
-            commission_bps,
-            slippage_bps,
-        } => {
-            let raw =
-                std::fs::read_to_string(&cfg).with_context(|| format!("read {}", cfg.display()))?;
-            let mr_cfg: MeanRevCfg = serde_yaml::from_str(&raw).context("parsing strategy YAML")?;
-
-            // Load each symbol from cache and align into a panel.
-            let mut series = Vec::with_capacity(mr_cfg.symbols.len());
-            for sc in &mr_cfg.symbols {
-                let bars = data::load_cached(&cache, &sc.symbol)?;
+        Cmd::Show { symbols, cache } => {
+            let syms: Vec<String> = symbols
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let mut series = Vec::with_capacity(syms.len());
+            for sym in &syms {
+                let bars = data::load_cached(&cache, sym)?;
                 if bars.is_empty() {
-                    eprintln!("warning: no cached bars for {} — skipping", sc.symbol);
+                    eprintln!("warning: no cached bars for {sym} — skipping");
                     continue;
                 }
-                series.push((sc.symbol.clone(), bars));
+                series.push((sym.clone(), bars));
             }
             if series.is_empty() {
                 anyhow::bail!("no symbols with cached data; run `lbr ingest` first");
             }
             let panel = Arc::new(Panel::from_series(series));
-            println!(
-                "Loaded panel: T={} bars, N={} symbols",
-                panel.t(),
-                panel.n()
-            );
-
-            let engine = VectorEngine::new(
-                cash,
-                CostConfig {
-                    commission_bps,
-                    slippage_bps,
-                },
-            );
-            let strategy = MeanRevStrategy::new(mr_cfg);
-            let result = run(&engine, panel.as_ref(), &strategy);
-
-            println!("\nStrategy: {}", result.name);
-            println!("{}", pretty(&result.metrics));
+            let first = data::i32_to_date(panel.dates[0]);
+            let last = data::i32_to_date(panel.dates[panel.t() - 1]);
+            println!("Panel: T={} bars  N={} symbols", panel.t(), panel.n());
+            println!("Dates: {first} → {last}");
+            println!("Symbols: {:?}", panel.symbols);
         }
     }
 

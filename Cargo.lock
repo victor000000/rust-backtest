@@ -673,27 +673,10 @@ dependencies = [
  "anyhow",
  "clap",
  "lbr",
- "lbr-strategies",
- "serde",
- "serde_yaml",
  "time",
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "lbr-strategies"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "approx",
- "lbr",
- "ndarray",
- "serde",
- "serde_yaml",
- "time",
- "tokio",
 ]
 
 [[package]]

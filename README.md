@@ -1,23 +1,26 @@
 # lbr — Local Backtest in Rust
 
-A local, vectorized, parallel backtesting platform.
+A local, vectorized, parallel backtesting platform. **Platform only — no strategy code shipped.**
 
 ## Layout
 
-This is a Cargo workspace with three crates:
+Public workspace (this repository):
 
 | Crate | Purpose |
 |---|---|
 | `lbr` | The platform. Data, panels, indicators, vector engine, metrics, `Strategy` trait. Knows nothing about specific strategies. |
-| `lbr-strategies` | Reusable, *generic* strategy frameworks built on top of `lbr` (e.g. `MeanRevStrategy`). Tuned configs are loaded at runtime, not committed. |
-| `lbr-cli` | The `lbr` command-line driver: ingest data + run backtests from YAML. |
+| `lbr-cli` | The `lbr` command-line driver. Strategy-agnostic — `ingest` data, `show` panels. |
+
+Strategy implementations are developed **outside** this repo (in a private
+workspace or your own repo) as crates that depend on `lbr`. The platform
+intentionally has zero knowledge of any strategy.
 
 ## Goals
 
 - **Vectorized research** — fast parameter sweeps via Rayon over independent jobs.
 - **Multi-source data** — Yahoo Finance for v0.1; Alpaca planned for live.
 - **Local-first** — CSV cache on disk, no cloud dependency.
-- **Strategy ↔ platform decoupling** — strategy code is a downstream crate; the platform never imports a concrete strategy.
+- **Hard strategy ↔ platform decoupling** — concrete strategies never live in this repo.
 
 ## Quickstart
 
@@ -27,14 +30,47 @@ cargo run -p lbr-cli --release -- ingest \
     --symbols SPY,QQQ,IWM,GLD,TLT \
     --start 2009-08-01 --end 2026-05-13
 
-# Run a strategy from a YAML config.
-cargo run -p lbr-cli --release -- run --cfg configs/example.yaml
+# Inspect a cached panel.
+cargo run -p lbr-cli --release -- show \
+    --symbols SPY,QQQ,IWM,GLD,TLT
 ```
 
-Or run the bundled mean-reversion demo:
+## Plugging in a strategy
 
-```bash
-cargo run -p lbr-strategies --example mean_rev_demo --release
+Create a separate crate (private or your own) with:
+
+```toml
+[dependencies]
+lbr = { path = "<path-to-this-repo>/crates/lbr" }
+ndarray = "0.16"
+```
+
+Then implement the `Strategy` trait:
+
+```rust
+use lbr::{Strategy, Panel};
+use ndarray::Array2;
+
+pub struct MyStrategy { /* ... */ }
+
+impl Strategy for MyStrategy {
+    fn name(&self) -> &str { "MyStrategy" }
+    fn target_weights(&self, panel: &Panel) -> Array2<f64> {
+        // produce (T, N) target weights
+        Array2::from_elem((panel.t(), panel.n()), 0.0)
+    }
+}
+```
+
+Run it through the engine:
+
+```rust
+use lbr::{VectorEngine, engine::run};
+use lbr::config::CostConfig;
+
+let engine = VectorEngine::new(70_000.0, CostConfig::default());
+let result = run(&engine, &panel, &MyStrategy { /* ... */ });
+println!("{}", lbr::metrics::pretty(&result.metrics));
 ```
 
 ## Stack
@@ -44,7 +80,6 @@ cargo run -p lbr-strategies --example mean_rev_demo --release
 - `rayon` for parallel sweeps
 - `tokio` for venue I/O
 - `yahoo_finance_api` for daily bars
-- `serde` + YAML for configs
 - `clap` for the CLI
 
 ## Design

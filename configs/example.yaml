@@ -1,8 +1,0 @@
-name: MeanRev_example
-gross_cap: 1.0
-symbols:
-  - {symbol: SPY, ind: wwma, p: 14, wt: 0.065, ef: 0.95, xf: 1.05, sl: 0.04, tp: 0.11, sma_p: 20, cf: 0.85, tf_t: 1.0}
-  - {symbol: QQQ, ind: wwma, p: 14, wt: 0.065, ef: 0.95, xf: 1.05, sl: 0.04, tp: 0.11, sma_p: 20, cf: 0.85, tf_t: 1.0}
-  - {symbol: IWM, ind: rsi,  p: 14, wt: 0.060, e: 30,    x: 70,    sl: 0.04, tp: 0.11, sma_p: 20, cf: 0.90, tf_t: 1.0}
-  - {symbol: GLD, ind: zscore, p: 20, wt: 0.060, e: -1.5, x: 1.5, sl: 0.04, tp: 0.10, sma_p: 40, cf: 0.95, tf_t: 1.0}
-  - {symbol: TLT, ind: wwma, p: 14, wt: 0.060, ef: 0.97, xf: 1.04, sl: 0.03, tp: 0.09, sma_p: 20, cf: 0.95, tf_t: 1.0}
