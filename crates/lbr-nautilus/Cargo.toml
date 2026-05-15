@@ -9,6 +9,7 @@ authors.workspace = true
 
 [dependencies]
 lbr = { workspace = true }
+ndarray = { workspace = true }
 nautilus-backtest = "0.56"
 nautilus-common = "0.56"
 nautilus-core = "0.56"
