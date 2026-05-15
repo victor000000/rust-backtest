@@ -1,7 +1,7 @@
 # Rust
 /target
 **/*.rs.bk
-Cargo.lock
+# Cargo.lock is committed — this is a workspace with binaries.
 
 # IDE
 .idea/
@@ -30,3 +30,14 @@ Thumbs.db
 
 # Claude
 .claude/
+
+# Private / tuned strategy configs (not committed)
+configs/s002*.yaml
+configs/s002*.yml
+configs/s002*.json
+configs/*.private.*
+**/examples/s002_*.rs
+**/examples/*_private.rs
+
+# Logs
+*.log
