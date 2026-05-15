@@ -10,6 +10,6 @@ mod vector;
 
 pub use event::{
     Bar as EventBar, Context as EventContext, EventBacktestResult, EventEngine, EventStrategy,
-    Fill, Order, OrderKind, OrderState, Portfolio, Position, Slice, run_event,
+    Fill, FillMode, Order, OrderKind, OrderState, Portfolio, Position, Slice, run_event,
 };
 pub use vector::{BacktestResult, VectorEngine, run, run_parallel};

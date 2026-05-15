@@ -206,11 +206,23 @@ pub struct EventBacktestResult {
     pub n_orders: u64,
 }
 
+/// Order-fill timing model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillMode {
+    /// Orders queued at bar i fill at open of bar i+1 (S002 / Lean default).
+    NextOpen,
+    /// Orders queued at bar i fill at close of bar i+1 (1-bar realistic lag).
+    NextClose,
+    /// Orders queued at bar i fill IMMEDIATELY at close of bar i (no lag).
+    /// Equivalent to vector-mode lag-1 timing; useful as a parity check.
+    SameClose,
+}
+
 pub struct EventEngine {
     pub starting_cash: f64,
     pub cost: CostConfig,
-    /// If true, orders placed at close of bar i fill at open of bar i+1
-    /// (S002 semantics). If false, fill at close of bar i (legacy).
+    pub fill_mode: FillMode,
+    /// Deprecated: keep for backwards-compat. If `true`, sets `fill_mode = NextOpen`.
     pub fill_at_next_open: bool,
 }
 
@@ -219,8 +231,14 @@ impl EventEngine {
         Self {
             starting_cash,
             cost,
+            fill_mode: FillMode::NextOpen,
             fill_at_next_open: true,
         }
+    }
+    pub fn with_fill_mode(mut self, mode: FillMode) -> Self {
+        self.fill_mode = mode;
+        self.fill_at_next_open = matches!(mode, FillMode::NextOpen);
+        self
     }
 }
 
@@ -255,6 +273,79 @@ pub fn run_event(
         n
     ];
 
+    // Helper: compute fill price given the current bar i and a fill mode.
+    // Returns None if the price is unavailable for this bar/symbol.
+    let fill_price_at = |i_fill: usize, j: usize, mode: FillMode| -> Option<f64> {
+        let raw_open = panel.open[(i_fill, j)];
+        let raw_close = panel.close[(i_fill, j)];
+        let adj = panel.adj_close[(i_fill, j)];
+        match mode {
+            FillMode::NextOpen => {
+                if raw_open.is_finite()
+                    && raw_close.is_finite()
+                    && raw_close > 0.0
+                    && adj.is_finite()
+                {
+                    Some(raw_open * adj / raw_close)
+                } else if raw_open.is_finite() {
+                    Some(raw_open)
+                } else if adj.is_finite() {
+                    Some(adj)
+                } else {
+                    None
+                }
+            }
+            FillMode::NextClose | FillMode::SameClose => {
+                if adj.is_finite() {
+                    Some(adj)
+                } else {
+                    None
+                }
+            }
+        }
+    };
+
+    let fill_orders = |i_fill: usize,
+                       portfolio: &mut Portfolio,
+                       pending: &mut Vec<Order>,
+                       n_fills: &mut u64,
+                       strategy: &mut Box<dyn EventStrategy>| {
+        if pending.is_empty() {
+            return;
+        }
+        let mut filled: Vec<Fill> = Vec::with_capacity(pending.len());
+        for order in pending.drain(..) {
+            let j = order.symbol_idx;
+            let Some(fill_price) = fill_price_at(i_fill, j, engine.fill_mode) else {
+                continue;
+            };
+            if !fill_price.is_finite() || fill_price <= 0.0 {
+                continue;
+            }
+            let target_shares = match order.kind {
+                OrderKind::SetHoldings { weight } => portfolio.equity * weight / fill_price,
+                OrderKind::Liquidate => 0.0,
+            };
+            let fill = Fill {
+                order_id: order.id,
+                symbol_idx: j,
+                fill_bar: i_fill,
+                fill_price,
+                weight: match order.kind {
+                    OrderKind::SetHoldings { weight } => weight,
+                    OrderKind::Liquidate => 0.0,
+                },
+                shares: target_shares,
+            };
+            portfolio.apply_fill(&fill, cost_rate);
+            filled.push(fill);
+            *n_fills += 1;
+        }
+        for f in &filled {
+            strategy.on_fill(f);
+        }
+    };
+
     for i in 0..t {
         // 1. Build the slice (read-only view of bar i).
         for (j, bar) in current_bars.iter_mut().enumerate().take(n) {
@@ -275,64 +366,13 @@ pub fn run_event(
             portfolio.mark_prices[j] = mark;
         }
 
-        // 2. Execute any pending orders against today's open (if i > 0 and
-        //    fill_at_next_open) or today's close (legacy mode).
-        if !pending.is_empty() {
-            let mut filled: Vec<Fill> = Vec::with_capacity(pending.len());
-            for order in pending.drain(..) {
-                let j = order.symbol_idx;
-                let fill_price = if engine.fill_at_next_open {
-                    // Use adjusted open: open × (adj_close / close).
-                    let raw_open = panel.open[(i, j)];
-                    let raw_close = panel.close[(i, j)];
-                    let adj = panel.adj_close[(i, j)];
-                    if raw_open.is_finite()
-                        && raw_close.is_finite()
-                        && raw_close > 0.0
-                        && adj.is_finite()
-                    {
-                        raw_open * adj / raw_close
-                    } else if raw_open.is_finite() {
-                        raw_open
-                    } else {
-                        panel.adj_close[(i, j)]
-                    }
-                } else {
-                    panel.adj_close[(i, j)]
-                };
-                if !fill_price.is_finite() || fill_price <= 0.0 {
-                    continue;
-                }
-                let target_shares = match order.kind {
-                    OrderKind::SetHoldings { weight } => portfolio.equity * weight / fill_price,
-                    OrderKind::Liquidate => 0.0,
-                };
-                let fill = Fill {
-                    order_id: order.id,
-                    symbol_idx: j,
-                    fill_bar: i,
-                    fill_price,
-                    weight: match order.kind {
-                        OrderKind::SetHoldings { weight } => weight,
-                        OrderKind::Liquidate => 0.0,
-                    },
-                    shares: target_shares,
-                };
-                portfolio.apply_fill(&fill, cost_rate);
-                filled.push(fill);
-                n_fills += 1;
-            }
-            for f in &filled {
-                strategy.on_fill(f);
-            }
+        // 2. Execute any pending orders queued at bar i-1 against bar i.
+        //    (NextOpen/NextClose semantics — same-close fills are handled later.)
+        if matches!(engine.fill_mode, FillMode::NextOpen | FillMode::NextClose) {
+            fill_orders(i, &mut portfolio, &mut pending, &mut n_fills, &mut strategy);
         }
 
-        // 3. Mark to market at end of bar.
-        portfolio.mark_to_market();
-        equity_curve[i] = portfolio.equity;
-
-        // 4. Strategy decides based on this bar's close — emits pending orders
-        //    that will fill at NEXT bar's open.
+        // 3. Strategy decides at this bar's close — emits pending orders.
         let slice = Slice {
             date: panel.dates[i],
             bar_idx: i,
@@ -347,6 +387,16 @@ pub fn run_event(
         };
         strategy.on_bar(&slice, &mut ctx);
         n_orders += pending.len() as u64;
+
+        // 4. Same-close fills: execute IMMEDIATELY at this bar's close (parity
+        //    with vector mode's lag-1 close-to-close timing).
+        if engine.fill_mode == FillMode::SameClose {
+            fill_orders(i, &mut portfolio, &mut pending, &mut n_fills, &mut strategy);
+        }
+
+        // 5. Mark to market at end of bar.
+        portfolio.mark_to_market();
+        equity_curve[i] = portfolio.equity;
     }
 
     let metrics = compute(&equity_curve);
