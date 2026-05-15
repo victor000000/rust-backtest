@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
                     Ok(bars) => {
                         data::save_cached(&cache, &sym, &bars)?;
                         println!(
-                            "  {:>6}  {:>5} bars  → {}/{}.csv",
+                            "  {:>6}  {:>5} bars  → {}/{}.parquet",
                             sym,
                             bars.len(),
                             cache.display(),

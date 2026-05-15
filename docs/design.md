@@ -42,8 +42,8 @@ A local, vectorized, parallel backtesting platform in Rust.
                           DATA LAYER
 ═══════════════════════════════════════════════════════════════════════════
                        ┌──────────────────┐
-                       │   Bar Cache      │  data/lake/<symbol>.csv
-                       │   (CSV / Parquet)│
+                       │   Bar Cache      │  data/lake/<symbol>.parquet
+                       │   (polars / Snappy)│
                        └────────┬─────────┘
                                 ▼
                        ┌──────────────────┐
@@ -92,7 +92,7 @@ A local, vectorized, parallel backtesting platform in Rust.
 | Module | Role |
 |---|---|
 | `data::yahoo` | Wraps `yahoo_finance_api`; uniform async `fetch_bars`. |
-| `data::cache` | CSV cache under `data/lake/`. Trivially inspectable. |
+| `data::cache` | Parquet cache via polars under `data/lake/<symbol>.parquet`. |
 | `data::panel` | Aligned `(T, N)` panel; symbol union, date intersection. |
 | `indicators` | Vectorized SMA, EMA, WWMA, RSI, Z-score, returns, rolling std. |
 | `strategy` | `Strategy` trait; reusable `MeanRevStrategy` framework. |
