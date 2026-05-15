@@ -10,8 +10,10 @@
 //! `nautilus_trading::strategy` module). See the `nautilus_ema_cross` example.
 
 pub mod bridge;
+pub mod mean_rev_strategy;
 
 pub use bridge::{
     NAUTILUS_VENUE_ID, build_equity, daily_bar_type, make_engine, to_nautilus_bars,
     to_nautilus_quotes,
 };
+pub use mean_rev_strategy::{InstrumentTuning, NautilusMeanRev};
