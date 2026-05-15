@@ -215,6 +215,130 @@ pub fn returns_axis0(prices: &Array2<f64>) -> Array2<f64> {
     })
 }
 
+/// Kaufman's Adaptive Moving Average (KAMA).
+/// SC = (ER * (fast - slow) + slow)^2; fast = 2/3, slow = 2/31.
+pub fn kama(prices: &Array2<f64>, period: usize) -> Array2<f64> {
+    let (t, _) = prices.dim();
+    if period == 0 || t < period + 1 {
+        return Array2::from_elem(prices.dim(), f64::NAN);
+    }
+    let fast = 2.0 / 3.0;
+    let slow = 2.0 / 31.0;
+    par_columns(prices, move |col, mut out| {
+        let len = col.len();
+        if len < period + 1 {
+            return;
+        }
+        // Seed at index `period` with the price (Wilder-style); KAMA then evolves.
+        let mut last = f64::NAN;
+        for i in 0..len {
+            let v = col[i];
+            if !v.is_finite() {
+                continue;
+            }
+            if !last.is_finite() && i >= period {
+                last = v;
+                out[i] = last;
+                continue;
+            }
+            if i < period {
+                continue;
+            }
+            let change = (v - col[i - period]).abs();
+            let mut vol = 0.0_f64;
+            for k in (i - period + 1)..=i {
+                let a = col[k];
+                let b = col[k - 1];
+                if a.is_finite() && b.is_finite() {
+                    vol += (a - b).abs();
+                }
+            }
+            let er = if vol > 0.0 { change / vol } else { 0.0 };
+            let sc = (er * (fast - slow) + slow).powi(2);
+            last += sc * (v - last);
+            out[i] = last;
+        }
+    })
+}
+
+/// Commodity Channel Index (CCI), close-only proxy. Period default 14.
+/// Range commonly -100…+100 (oversold below -100).
+pub fn cci(prices: &Array2<f64>, period: usize) -> Array2<f64> {
+    let (t, _) = prices.dim();
+    if period < 2 || t < period {
+        return Array2::from_elem(prices.dim(), f64::NAN);
+    }
+    par_columns(prices, move |col, mut out| {
+        for i in (period - 1)..col.len() {
+            let win = col.slice(ndarray::s![i + 1 - period..=i]);
+            let mut sum = 0.0;
+            let mut count = 0usize;
+            for &v in win.iter() {
+                if v.is_finite() {
+                    sum += v;
+                    count += 1;
+                }
+            }
+            if count < period {
+                continue;
+            }
+            let mean = sum / count as f64;
+            let mut mad = 0.0;
+            for &v in win.iter() {
+                if v.is_finite() {
+                    mad += (v - mean).abs();
+                }
+            }
+            mad /= count as f64;
+            if mad > 0.0 {
+                out[i] = (col[i] - mean) / (0.015 * mad);
+            }
+        }
+    })
+}
+
+/// Chande Momentum Oscillator (CMO). Range -100…+100.
+pub fn cmo(prices: &Array2<f64>, period: usize) -> Array2<f64> {
+    let (t, _) = prices.dim();
+    if period < 2 || t < period + 1 {
+        return Array2::from_elem(prices.dim(), f64::NAN);
+    }
+    par_columns(prices, move |col, mut out| {
+        for i in period..col.len() {
+            let mut up = 0.0;
+            let mut dn = 0.0;
+            let mut count = 0usize;
+            for k in (i - period + 1)..=i {
+                let a = col[k];
+                let b = col[k - 1];
+                if a.is_finite() && b.is_finite() {
+                    let d = a - b;
+                    if d > 0.0 {
+                        up += d;
+                    } else {
+                        dn += -d;
+                    }
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                let denom = up + dn;
+                if denom > 0.0 {
+                    out[i] = 100.0 * (up - dn) / denom;
+                } else {
+                    out[i] = 0.0;
+                }
+            }
+        }
+    })
+}
+
+/// Money Flow Index proxy — uses RSI on close. Real MFI requires high/low/
+/// volume per bar; this close-only proxy preserves the threshold semantics.
+pub fn mfi(prices: &Array2<f64>, period: usize) -> Array2<f64> {
+    rsi(prices, period)
+}
+
 /// Trailing standard deviation of the cross-sectional mean (utility).
 pub fn rolling_std(prices: &Array2<f64>, period: usize) -> Array1<f64> {
     let (t, _) = prices.dim();
