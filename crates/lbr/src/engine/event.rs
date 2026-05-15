@@ -33,6 +33,7 @@ pub struct Bar {
     pub low: f64,
     pub close: f64,
     pub adj_close: f64,
+    pub volume: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -186,7 +187,7 @@ impl Context<'_> {
 }
 
 /// Event-driven strategy. Called once per bar with a Slice of all market data.
-pub trait EventStrategy: Send + Sync {
+pub trait Strategy: Send + Sync {
     fn name(&self) -> &str;
     fn on_bar(&mut self, slice: &Slice<'_>, ctx: &mut Context<'_>);
     fn on_fill(&mut self, _fill: &Fill) {}
@@ -242,10 +243,10 @@ impl EventEngine {
     }
 }
 
-pub fn run_event(
+pub fn run(
     engine: &EventEngine,
     panel: Arc<Panel>,
-    mut strategy: Box<dyn EventStrategy>,
+    mut strategy: Box<dyn Strategy>,
 ) -> EventBacktestResult {
     let panel = panel.as_ref();
     let t = panel.t();
@@ -269,6 +270,7 @@ pub fn run_event(
             low: f64::NAN,
             close: f64::NAN,
             adj_close: f64::NAN,
+            volume: f64::NAN,
         };
         n
     ];
@@ -309,7 +311,7 @@ pub fn run_event(
                        portfolio: &mut Portfolio,
                        pending: &mut Vec<Order>,
                        n_fills: &mut u64,
-                       strategy: &mut Box<dyn EventStrategy>| {
+                       strategy: &mut Box<dyn Strategy>| {
         if pending.is_empty() {
             return;
         }
@@ -357,6 +359,7 @@ pub fn run_event(
                 low: panel.low[(i, j)],
                 close: panel.close[(i, j)],
                 adj_close: panel.adj_close[(i, j)],
+                volume: panel.volume[(i, j)],
             };
             let mark = if panel.adj_close[(i, j)].is_finite() {
                 panel.adj_close[(i, j)]
@@ -410,4 +413,21 @@ pub fn run_event(
         n_fills,
         n_orders,
     }
+}
+
+/// Run many strategies in parallel against the same panel via Rayon.
+/// Each strategy gets its own engine instance and runs independently.
+pub fn run_parallel(
+    engine_cfg: impl Fn() -> EventEngine + Send + Sync,
+    panel: Arc<Panel>,
+    strategies: Vec<Box<dyn Strategy>>,
+) -> Vec<EventBacktestResult> {
+    use rayon::prelude::*;
+    strategies
+        .into_par_iter()
+        .map(|s| {
+            let engine = engine_cfg();
+            run(&engine, panel.clone(), s)
+        })
+        .collect()
 }

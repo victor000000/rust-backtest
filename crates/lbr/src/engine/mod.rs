@@ -1,15 +1,16 @@
-//! Backtest engines: vector mode + event-driven mode.
+//! Event-driven backtest engine.
 //!
-//! Both engines consume the same `Panel` data and the same `Strategy`/`EventStrategy`
-//! abstractions live in their respective traits. Vector mode is fast and parallel
-//! (run many strategies via Rayon); event mode mirrors S002/Lean/Nautilus semantics
-//! with per-bar order generation, next-open fills, and an explicit portfolio.
+//! A single engine consumes `Strategy::on_bar(slice, ctx)` and `on_fill(fill)`,
+//! produces an equity curve + full order/fill history. Per-bar order generation,
+//! configurable fill mode (next-open, next-close, same-close), proper Portfolio
+//! with cash + shares + mark-to-market.
+//!
+//! Parallelism comes from running many engines concurrently (one per parameter
+//! set / fold) via Rayon — see `run_parallel`.
 
 mod event;
-mod vector;
 
 pub use event::{
-    Bar as EventBar, Context as EventContext, EventBacktestResult, EventEngine, EventStrategy,
-    Fill, FillMode, Order, OrderKind, OrderState, Portfolio, Position, Slice, run_event,
+    Bar as EventBar, Context, EventBacktestResult, EventEngine, Fill, FillMode, Order, OrderKind,
+    OrderState, Portfolio, Position, Slice, Strategy, run, run_parallel,
 };
-pub use vector::{BacktestResult, VectorEngine, run, run_parallel};

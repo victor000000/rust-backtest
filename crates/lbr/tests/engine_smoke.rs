@@ -1,23 +1,27 @@
-//! End-to-end smoke test of the vector engine using a synthetic panel and a
-//! "buy and hold" strategy. Asserts that the equity curve is positive and the
-//! engine accounts for lag-1 weights correctly.
+//! End-to-end smoke test of the event engine using a synthetic panel and a
+//! "buy and hold" strategy. Asserts the equity curve rises monotonically when
+//! the underlying climbs.
 
-use ndarray::{Array2, array};
+use ndarray::array;
 use std::sync::Arc;
 
 use lbr::config::CostConfig;
 use lbr::data::{Bar, Panel};
-use lbr::engine::{VectorEngine, run};
-use lbr::strategy::Strategy;
+use lbr::engine::{Context, EventEngine, FillMode, Slice, Strategy, run};
 
-struct BuyAndHold;
+struct BuyAndHold {
+    bought: bool,
+}
 
 impl Strategy for BuyAndHold {
     fn name(&self) -> &str {
         "BuyAndHold"
     }
-    fn target_weights(&self, panel: &lbr::Panel) -> Array2<f64> {
-        Array2::from_elem((panel.t(), panel.n()), 1.0)
+    fn on_bar(&mut self, _slice: &Slice<'_>, ctx: &mut Context<'_>) {
+        if !self.bought {
+            ctx.set_holdings(0, 1.0);
+            self.bought = true;
+        }
     }
 }
 
@@ -44,15 +48,20 @@ fn buy_and_hold_recovers_underlying_return() {
         make_bars(&[100.0, 101.0, 102.0, 103.0, 104.0]),
     )];
     let panel = Arc::new(Panel::from_series(series));
-    let engine = VectorEngine::new(10_000.0, CostConfig::default());
-    let r = run(&engine, panel.as_ref(), &BuyAndHold);
+    let engine =
+        EventEngine::new(10_000.0, CostConfig::default()).with_fill_mode(FillMode::SameClose);
+    let r = run(
+        &engine,
+        panel.clone(),
+        Box::new(BuyAndHold { bought: false }),
+    );
 
-    // Engine applies lag-1 weights, so buy-and-hold on 5 days captures only 3
-    // of 4 daily returns. Compound: 1.0099 × 1.0098 × 1.0097 ≈ 1.0297.
+    // Buy at close of bar 0 (price 100), hold to bar 4 (price 104). Total
+    // return = 104/100 - 1 = 4%.
     let total = r.metrics.total_return;
     assert!(
-        (0.025..0.035).contains(&total),
-        "total_return={total} not in [0.025, 0.035]"
+        (0.035..0.045).contains(&total),
+        "total_return={total} not in [0.035, 0.045]"
     );
 
     // Equity curve must be monotonically non-decreasing in this all-up scenario.
