@@ -1275,6 +1275,94 @@ pub fn frama(prices: &Array2<f64>, period: usize) -> Array2<f64> {
     out
 }
 
+/// Average Directional Index, Wilder smoothing. Range [0, 100].
+/// Standard trend-strength indicator: ADX < 20 = weak trend, > 25 = strong.
+pub fn adx(
+    high: &Array2<f64>,
+    low: &Array2<f64>,
+    close: &Array2<f64>,
+    period: usize,
+) -> Array2<f64> {
+    let (t, n) = close.dim();
+    if period < 2 || t < period * 2 + 1 {
+        return Array2::from_elem((t, n), f64::NAN);
+    }
+    let tr = true_range(high, low, close);
+    // Directional moves.
+    let mut pdm = Array2::from_elem((t, n), 0.0);
+    let mut ndm = Array2::from_elem((t, n), 0.0);
+    for j in 0..n {
+        for i in 1..t {
+            let h = high[(i, j)];
+            let ph = high[(i - 1, j)];
+            let l = low[(i, j)];
+            let pl = low[(i - 1, j)];
+            if h.is_finite() && ph.is_finite() && l.is_finite() && pl.is_finite() {
+                let up = h - ph;
+                let down = pl - l;
+                pdm[(i, j)] = if up > down && up > 0.0 { up } else { 0.0 };
+                ndm[(i, j)] = if down > up && down > 0.0 { down } else { 0.0 };
+            }
+        }
+    }
+    let smooth_tr = wwma(&tr, period);
+    let smooth_pdm = wwma(&pdm, period);
+    let smooth_ndm = wwma(&ndm, period);
+    let mut dx = Array2::from_elem((t, n), f64::NAN);
+    for j in 0..n {
+        for i in 0..t {
+            let st = smooth_tr[(i, j)];
+            let sp = smooth_pdm[(i, j)];
+            let sn = smooth_ndm[(i, j)];
+            if st.is_finite() && st > 0.0 && sp.is_finite() && sn.is_finite() {
+                let pdi = 100.0 * sp / st;
+                let ndi = 100.0 * sn / st;
+                let s = pdi + ndi;
+                if s > 0.0 {
+                    dx[(i, j)] = 100.0 * (pdi - ndi).abs() / s;
+                }
+            }
+        }
+    }
+    wwma(&dx, period)
+}
+
+/// Bollinger Band width relative to the middle band:
+/// `(upper − lower) / middle = 2·k·σ / SMA(n)`. Useful as a vol-regime gate.
+pub fn bb_width(prices: &Array2<f64>, period: usize, k: f64) -> Array2<f64> {
+    let (t, _) = prices.dim();
+    if period < 2 || t < period {
+        return Array2::from_elem(prices.dim(), f64::NAN);
+    }
+    par_columns(prices, move |col, mut out| {
+        for i in (period - 1)..col.len() {
+            let mut sum = 0.0;
+            let mut count = 0usize;
+            for k_ in 0..period {
+                let v = col[i - (period - 1) + k_];
+                if v.is_finite() {
+                    sum += v;
+                    count += 1;
+                }
+            }
+            if count != period {
+                continue;
+            }
+            let m = sum / period as f64;
+            let mut var = 0.0;
+            for k_ in 0..period {
+                let v = col[i - (period - 1) + k_];
+                let d = v - m;
+                var += d * d;
+            }
+            let sd = (var / period as f64).sqrt();
+            if m > 0.0 {
+                out[i] = (2.0 * k * sd) / m;
+            }
+        }
+    })
+}
+
 /// Trailing standard deviation of the cross-sectional mean (utility).
 pub fn rolling_std(prices: &Array2<f64>, period: usize) -> Array1<f64> {
     let (t, _) = prices.dim();
