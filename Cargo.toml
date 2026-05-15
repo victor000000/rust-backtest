@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/lbr",
     "crates/lbr-cli",
+    "crates/lbr-nautilus",
 ]
 # Private strategy crates live under `private/` and are NOT part of the
 # public workspace. They are git-ignored and intended to be developed

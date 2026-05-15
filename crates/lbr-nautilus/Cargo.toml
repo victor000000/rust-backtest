@@ -1,0 +1,23 @@
+[package]
+name = "lbr-nautilus"
+description = "Bridge between lbr's data layer and Nautilus Trader's BacktestEngine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+lbr = { workspace = true }
+nautilus-backtest = "0.56"
+nautilus-common = "0.56"
+nautilus-core = "0.56"
+nautilus-data = "0.56"
+nautilus-execution = "0.56"
+nautilus-indicators = "0.56"
+nautilus-model = "0.56"
+nautilus-portfolio = "0.56"
+nautilus-trading = { version = "0.56", features = ["examples"] }
+anyhow = { workspace = true }
+rust_decimal = "1"
+ustr = "1"
