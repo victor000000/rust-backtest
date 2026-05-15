@@ -339,6 +339,152 @@ pub fn mfi(prices: &Array2<f64>, period: usize) -> Array2<f64> {
     rsi(prices, period)
 }
 
+/// Arnaud Legoux Moving Average. Gaussian-weighted MA with offset 0.85, sigma 6.
+pub fn alma(prices: &Array2<f64>, period: usize) -> Array2<f64> {
+    let (t, _) = prices.dim();
+    if period < 2 || t < period {
+        return Array2::from_elem(prices.dim(), f64::NAN);
+    }
+    let offset = 0.85_f64;
+    let sigma = 6.0_f64;
+    let m = offset * (period as f64 - 1.0);
+    let s = period as f64 / sigma;
+    let mut weights: Vec<f64> = (0..period)
+        .map(|i| (-((i as f64 - m).powi(2)) / (2.0 * s * s)).exp())
+        .collect();
+    let norm: f64 = weights.iter().sum();
+    for w in &mut weights {
+        *w /= norm;
+    }
+    let weights = std::sync::Arc::new(weights);
+    par_columns(prices, move |col, mut out| {
+        let len = col.len();
+        for i in (period - 1)..len {
+            let mut sum = 0.0;
+            let mut ok = true;
+            for k in 0..period {
+                let v = col[i - (period - 1 - k)];
+                if !v.is_finite() {
+                    ok = false;
+                    break;
+                }
+                sum += v * weights[k];
+            }
+            if ok {
+                out[i] = sum;
+            }
+        }
+    })
+}
+
+/// Least Squares Moving Average. Linear regression over `period` bars
+/// evaluated at the end of the window.
+pub fn lsma(prices: &Array2<f64>, period: usize) -> Array2<f64> {
+    let (t, _) = prices.dim();
+    if period < 2 || t < period {
+        return Array2::from_elem(prices.dim(), f64::NAN);
+    }
+    let n = period as f64;
+    // x = 0..n; sum_x = n(n-1)/2; sum_x2 = (n-1)n(2n-1)/6
+    let sum_x = n * (n - 1.0) / 2.0;
+    let sum_x2 = (n - 1.0) * n * (2.0 * n - 1.0) / 6.0;
+    let denom = n * sum_x2 - sum_x * sum_x;
+    par_columns(prices, move |col, mut out| {
+        let len = col.len();
+        for i in (period - 1)..len {
+            let mut sum_y = 0.0;
+            let mut sum_xy = 0.0;
+            let mut count = 0_usize;
+            for k in 0..period {
+                let x = k as f64;
+                let y = col[i - (period - 1) + k];
+                if y.is_finite() {
+                    sum_y += y;
+                    sum_xy += x * y;
+                    count += 1;
+                }
+            }
+            if count == period {
+                let slope = (n * sum_xy - sum_x * sum_y) / denom;
+                let intercept = (sum_y - slope * sum_x) / n;
+                out[i] = intercept + slope * (n - 1.0);
+            }
+        }
+    })
+}
+
+/// Triple Exponential Moving Average: 3·EMA − 3·EMA(EMA) + EMA(EMA(EMA)).
+pub fn tema(prices: &Array2<f64>, period: usize) -> Array2<f64> {
+    let e1 = ema(prices, period);
+    let e2 = ema(&e1, period);
+    let e3 = ema(&e2, period);
+    let (t, n) = prices.dim();
+    let mut out = Array2::from_elem((t, n), f64::NAN);
+    for i in 0..t {
+        for j in 0..n {
+            let a = e1[(i, j)];
+            let b = e2[(i, j)];
+            let c = e3[(i, j)];
+            if a.is_finite() && b.is_finite() && c.is_finite() {
+                out[(i, j)] = 3.0 * a - 3.0 * b + c;
+            }
+        }
+    }
+    out
+}
+
+/// Double Exponential Moving Average: 2·EMA − EMA(EMA).
+pub fn dema(prices: &Array2<f64>, period: usize) -> Array2<f64> {
+    let e1 = ema(prices, period);
+    let e2 = ema(&e1, period);
+    let (t, n) = prices.dim();
+    let mut out = Array2::from_elem((t, n), f64::NAN);
+    for i in 0..t {
+        for j in 0..n {
+            let a = e1[(i, j)];
+            let b = e2[(i, j)];
+            if a.is_finite() && b.is_finite() {
+                out[(i, j)] = 2.0 * a - b;
+            }
+        }
+    }
+    out
+}
+
+/// Stochastic RSI: stochastic oscillator applied to a 14-period RSI series.
+/// Returns values in [0, 100].
+pub fn srsi(prices: &Array2<f64>, period: usize) -> Array2<f64> {
+    let rsi_vals = rsi(prices, 14);
+    let (t, _) = prices.dim();
+    if period < 2 || t < period + 14 {
+        return Array2::from_elem(prices.dim(), f64::NAN);
+    }
+    par_columns(&rsi_vals, move |col, mut out| {
+        for i in (period - 1)..col.len() {
+            let win = col.slice(ndarray::s![i + 1 - period..=i]);
+            let mut min_v = f64::INFINITY;
+            let mut max_v = f64::NEG_INFINITY;
+            let mut ok = true;
+            for &v in win.iter() {
+                if v.is_finite() {
+                    if v < min_v {
+                        min_v = v;
+                    }
+                    if v > max_v {
+                        max_v = v;
+                    }
+                } else {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok && max_v > min_v {
+                out[i] = 100.0 * (col[i] - min_v) / (max_v - min_v);
+            }
+        }
+    })
+}
+
 /// Trailing standard deviation of the cross-sectional mean (utility).
 pub fn rolling_std(prices: &Array2<f64>, period: usize) -> Array1<f64> {
     let (t, _) = prices.dim();
