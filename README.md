@@ -1,91 +1,32 @@
-# lbr — Local Backtest in Rust
+# lbr — local event-driven backtesting
 
-A local, vectorized, parallel backtesting platform. **Platform only — no strategy code shipped.**
+Workspace version **0.1.1**, Rust 1.95.0 / edition 2024. The current engine is event-driven; the former VectorEngine/target_weights README examples were superseded and do not match the exported API.
 
-## Layout
-
-Public workspace (this repository):
-
-| Crate | Purpose |
+| Crate | Implemented scope |
 |---|---|
-| `lbr` | The platform. Data, panels, indicators, vector engine, metrics, `Strategy` trait. Knows nothing about specific strategies. |
-| `lbr-cli` | The `lbr` command-line driver. Strategy-agnostic — `ingest` data, `show` panels. |
+| lbr | Bar/Parquet cache, aligned ndarray panels, indicators, event engine, portfolio and metrics |
+| lbr-cli | Data driver: Yahoo daily ingest and cached panel inspection |
+| lbr-nautilus | Nautilus bridge, simulated venue/instrument conversion, examples and a mean-reversion implementation |
 
-Strategy implementations are developed **outside** this repo (in a private
-workspace or your own repo) as crates that depend on `lbr`. The platform
-intentionally has zero knowledge of any strategy.
+Private tuned strategy configurations remain outside the public workspace, but the bridge and public examples do contain strategy code. Alpaca/live brokerage integration is not implemented here.
 
-## Goals
-
-- **Vectorized research** — fast parameter sweeps via Rayon over independent jobs.
-- **Multi-source data** — Yahoo Finance for v0.1; Alpaca planned for live.
-- **Local-first** — CSV cache on disk, no cloud dependency.
-- **Hard strategy ↔ platform decoupling** — concrete strategies never live in this repo.
-
-## Quickstart
+## Build and offline checks
 
 ```bash
-# Ingest a few ETFs from Yahoo Finance.
-cargo run -p lbr-cli --release -- ingest \
-    --symbols SPY,QQQ,IWM,GLD,TLT \
-    --start 2009-08-01 --end 2026-05-13
-
-# Inspect a cached panel.
-cargo run -p lbr-cli --release -- show \
-    --symbols SPY,QQQ,IWM,GLD,TLT
+cargo test --workspace --all-targets --all-features --locked
+cargo run -p lbr-cli -- --help
 ```
 
-## Plugging in a strategy
+Initial dependency builds need registry access and a C toolchain. The public test suite has four tests: two event/return checks and two cache-path regressions. [CI](CI.md) gives lint/test commands. No market request is made by --help or these synthetic tests.
 
-Create a separate crate (private or your own) with:
+## Data CLI
 
-```toml
-[dependencies]
-lbr = { path = "<path-to-this-repo>/crates/lbr" }
-ndarray = "0.16"
-```
+`ingest` contacts Yahoo and writes per-symbol Parquet files; it is not an offline smoke test. `show` reads existing cache files. Both accept --symbols (comma-separated) and --cache (default data/lake). Ingest also requires --start (inclusive) and --end (exclusive), ISO dates. Use `cargo run -p lbr-cli -- ingest --help` before choosing an authorized acquisition scope.
 
-Then implement the `Strategy` trait:
+The cache is keyed by lowercased symbol, not content/date range. New ingest overwrites that symbol's cache. A cache is neither an immutable delivery nor provider-origin proof. Preserve a separate dated manifest/hash if a study needs reproducible inputs.
 
-```rust
-use lbr::{Strategy, Panel};
-use ndarray::Array2;
+## Strategy API
 
-pub struct MyStrategy { /* ... */ }
+Implement `Strategy::name` and mutable `on_bar(&Slice, &mut Context)`; `on_fill` is optional. Use Context.set_holdings/liquidate, EventEngine::new, explicit FillMode, Arc<Panel> and boxed Strategy with run. The complete synthetic example is [engine_smoke.rs](crates/lbr/tests/engine_smoke.rs); it compiles in CI. Old `VectorEngine` and `target_weights` interfaces are absent.
 
-impl Strategy for MyStrategy {
-    fn name(&self) -> &str { "MyStrategy" }
-    fn target_weights(&self, panel: &Panel) -> Array2<f64> {
-        // produce (T, N) target weights
-        Array2::from_elem((panel.t(), panel.n()), 0.0)
-    }
-}
-```
-
-Run it through the engine:
-
-```rust
-use lbr::{VectorEngine, engine::run};
-use lbr::config::CostConfig;
-
-let engine = VectorEngine::new(70_000.0, CostConfig::default());
-let result = run(&engine, &panel, &MyStrategy { /* ... */ });
-println!("{}", lbr::metrics::pretty(&result.metrics));
-```
-
-## Stack
-
-- Rust 1.95 stable (edition 2024)
-- `ndarray` for panels & numeric kernels
-- `rayon` for parallel sweeps
-- `tokio` for venue I/O
-- `yahoo_finance_api` for daily bars
-- `clap` for the CLI
-
-## Design
-
-See [`docs/design.md`](docs/design.md) for the architecture, data flow, and module map.
-
-## License
-
-MIT.
+[Design and data contracts](docs/design.md) describes timing, cost units and limitations. [Documentation audit](docs/DOCUMENTATION_AUDIT.md) records reviewed coverage and known gaps. No exact QC parity, native margin model, production readiness or economic alpha is claimed. License: MIT.

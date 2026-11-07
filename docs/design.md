@@ -1,186 +1,35 @@
-# lbr — System Design
+# Event-driven platform design and contracts
 
-A local, vectorized, parallel backtesting platform in Rust.
+Reviewed 2026-11-07 against current 0.1.1 source. This replaces the outdated vector-engine/future-Parquet design narrative. Historical release evidence remains in REVIEW_20261107.md.
 
-## Goals
-
-- **Vectorized research** — fast parameter sweeps across historical panels.
-- **Event-driven engine (later)** — same code path for backtest, paper, and live.
-- **Multi-source data** — Yahoo Finance for v0.1; Alpaca planned for live.
-- **Local-first** — CSV/Parquet on disk, no cloud dependency for research.
-- **Validation target** — reproduce a known QuantConnect strategy ("S002")
-  performance shape (CAGR, Sharpe, MaxDD) within reasonable accuracy.
-
-## Non-goals (v0.1)
-
-- Tick / sub-daily data (daily only).
-- Live execution (Alpaca adapter is v0.2).
-- Multi-currency, options, futures.
-- Survivorship-bias correction (delisted symbols).
-- Pipeline DAG, Strategy Tree, OrderTicket state machine
-  (these are documented in `design-extended.md` as v2+ ideas).
-
-## Architecture
-
-```
-═══════════════════════════════════════════════════════════════════════════
-                          EXTERNAL VENUES
-═══════════════════════════════════════════════════════════════════════════
-                       ┌───────────────────┐
-                       │  Yahoo Finance    │     (Alpaca planned in v0.2)
-                       │  data only        │
-                       └─────────┬─────────┘
-                                 │
-═══════════════════════════════════════════════════════════════════════════
-                          ADAPTER LAYER
-═══════════════════════════════════════════════════════════════════════════
-                       ┌─────────────────┐
-                       │  Yahoo Adapter  │   (DataClient — uniform fetch API)
-                       └────────┬────────┘
-                                ▼
-═══════════════════════════════════════════════════════════════════════════
-                          DATA LAYER
-═══════════════════════════════════════════════════════════════════════════
-                       ┌──────────────────┐
-                       │   Bar Cache      │  data/lake/<symbol>.parquet
-                       │   (polars / Snappy)│
-                       └────────┬─────────┘
-                                ▼
-                       ┌──────────────────┐
-                       │   Panel (T × N)  │  ndarray, Arc-shared
-                       │   open/high/low/ │
-                       │   close/adj/vol  │
-                       └────────┬─────────┘
-                                │
-═══════════════════════════════════════════════════════════════════════════
-                          ENGINE (vector mode)
-═══════════════════════════════════════════════════════════════════════════
-   ┌──────────────────────────────────────────────────────────────────┐
-   │  Sweep Runner (Rayon)                                            │
-   │    ├── strategy 1 ┐                                              │
-   │    ├── strategy 2 ┼─► panel ──► weights ──► returns ──► equity   │
-   │    └── strategy N ┘                                              │
-   │                                                                  │
-   │  Per-job pipeline:                                               │
-   │    Strategy::target_weights(panel) ──► W (T,N)                   │
-   │    returns_axis0(prices)             ──► R (T,N)                 │
-   │    pnl[i]    = Σ_j W[i-1,j] · R[i,j]                             │
-   │    turnover  = Σ_j |W[i,j] − W[i-1,j]|                           │
-   │    cost      = turnover · (commission_bps + slippage_bps)/10_000 │
-   │    equity[i] = equity[i-1] · (1 + pnl[i] − cost[i])              │
-   └────────────────────────┬─────────────────────────────────────────┘
-                            ▼
-═══════════════════════════════════════════════════════════════════════════
-                          SHARED CORE
-═══════════════════════════════════════════════════════════════════════════
-   ┌──────────────────────────────────────────────────────────────────┐
-   │  Strategy trait │ Cost Config │ Metrics                          │
-   │  Indicators (sma · ema · wwma · rsi · zscore · returns · std)    │
-   └────────────────────────┬─────────────────────────────────────────┘
-                            ▼
-═══════════════════════════════════════════════════════════════════════════
-                          OUTPUT
-═══════════════════════════════════════════════════════════════════════════
-   ┌──────────────────────────────────────────────────────────────────┐
-   │  Equity curve · Metrics (Sharpe, Sortino, CAGR, MaxDD, Calmar)   │
-   │  Pretty CLI report                                               │
-   └──────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+ A[Yahoo daily bars or caller series] --> B[Symbol Parquet cache]
+ B --> C[Panel: sorted date union and NaN gaps]
+ C --> D[Sequential on_bar strategy and order queue]
+ D --> E[Selected fill mode and portfolio accounting]
+ E --> F[Equity orders fills and metrics]
+ C --> G[Rayon: independent engine runs]
 ```
 
-## Module map
+## Data and persistence
 
-| Module | Role |
-|---|---|
-| `data::yahoo` | Wraps `yahoo_finance_api`; uniform async `fetch_bars`. |
-| `data::cache` | Parquet cache via polars under `data/lake/<symbol>.parquet`. |
-| `data::panel` | Aligned `(T, N)` panel; symbol union, date intersection. |
-| `indicators` | Vectorized SMA, EMA, WWMA, RSI, Z-score, returns, rolling std. |
-| `strategy` | `Strategy` trait; reusable `MeanRevStrategy` framework. |
-| `engine::vector` | Lag-1 weight × returns simulator; Rayon parallel runner. |
-| `metrics` | CAGR · Sharpe · Sortino · MaxDD · Calmar · Win-Rate. |
-| `config` | Serde-loadable backtest, data, and cost configs. |
+Bar carries date (days since Unix epoch), open/high/low/close/adj_close and volume. Cache uses Polars/Snappy Parquet in data/lake by default: date is i32 and price/volume columns are f64. Missing cached files return empty bars; malformed Parquet/schema errors propagate. Some null cells become NaN and null dates currently become zero, so consumers must validate actual inputs before research; this is not a certified market-data loader.
 
-## Strategy interface
+Panel dates are the sorted union across symbols. Missing symbol/date rows become NaN; input bar series need not be sorted. Cache names are lowercased symbols; they are not content-addressed or range-keyed. Symbol validation rejects empty/dot names, separators, drive colons and controls before I/O. Common punctuation such as ^GSPC, BRK.B and EURUSD=X is allowed. This is lexical containment, not protection from pre-existing malicious symlinks. Save is not an atomic immutable-release protocol; preserve original inputs before overwriting a cache.
 
-```rust
-pub trait Strategy: Send + Sync {
-    fn name(&self) -> &str;
-    fn target_weights(&self, panel: &Panel) -> Array2<f64>;
-}
-```
+## Execution and timing
 
-One trait, one method. The engine handles the lag, returns, costs, and the
-equity curve. The strategy is responsible only for producing target weights
-from a panel.
+EventEngine holds starting cash, CostConfig and FillMode. Default NextOpen fills at the next bar's open; NextClose and SameClose are explicit alternatives. SameClose is a modeling assumption, not proof of executable close fills. Strategies generate orders through Context; portfolio cash/positions are marked at each close. Each engine is sequential; run_parallel distributes independent runs across Rayon. Panel arrays can be shared through Arc.
 
-## Mean-reversion framework (`MeanRevStrategy`)
+CostConfig commission_bps and slippage_bps default to zero and are summed/divided by 10,000 by the engine. Despite old source comments describing fractional rates, callers must use numeric basis points: 5.0 means 5 bps, not 0.0005. BacktestConfig defaults starting_cash to 70,000 and data.cache_dir to data/lake; the CLI itself accepts direct flags, not a config-file option. See the exported event API and synthetic test before writing downstream strategies.
 
-A generic, per-symbol mean-reversion engine. Symbol config carries:
+The lbr-nautilus crate builds a simulated venue and converts bars/quotes/instruments. It includes public strategy/example code. Neither this bridge nor the local engine implements live broker authentication or production risk management. Current metrics assume 252 periods/year; non-daily use needs explicit interpretation. Source does not certify invalid/insolvent equity handling in every metric.
 
-| Field | Meaning |
-|---|---|
-| `ind`, `p` | Indicator family (`wwma`/`sma`/`ema`/`rsi`/`zscore`) and period. |
-| `wt` | Target weight when invested. |
-| `e`, `x` | Entry/exit thresholds for oscillators. |
-| `ef`, `xf` | Entry/exit factors for MA-like (price < val·ef → enter). |
-| `sl`, `tp` | Stop-loss / take-profit (% of entry price). |
-| `sma_p`, `cf`, `tf_t` | Trend filter: SMA period + below/above factors. |
+## Reproduction and troubleshooting
 
-Gross exposure is capped per-row. SL/TP are applied at the *next* bar close
-based on the running entry price.
+Freeze symbol list, date bounds, exact Parquet bytes/hashes, strategy/configuration, fill mode, cost units and source revision separately. Re-downloading Yahoo can produce revised history; deleting a cache is not a reproducibility guarantee. No provider publication manifest or license/coverage certification is automatically created.
 
-Tuned configurations (e.g. S002's per-ETF table) are loaded externally and
-are deliberately **not** part of this open-source library.
+No cached data: inspect the intended cache path before any explicit network ingest. Invalid symbol: choose a valid ticker, not a filesystem path. NaN panels: inspect missing sessions/fields; never silently forward-fill to manufacture observations. Unexpected P&L: first compare fill timing, adjusted/unadjusted prices, exposure, fees and source data before inferring a strategy effect. Failed cache write: preserve the source bars and prior valid cache; no automatic rollback/recovery guarantee exists.
 
-## Parallelism
-
-- **Outer parallelism (primary):** Rayon over independent strategy/parameter
-  jobs. The panel is shared as `Arc<Panel>` — loaded once, read-only.
-- **Inner parallelism (later):** ndarray ops can be parallelized per-column
-  when universes grow.
-
-## Determinism
-
-- All strategy decisions are pure functions of the panel and the config.
-- No RNG in the engine.
-- Caches are content-addressable by symbol+date range; deleting the cache
-  reproduces the run.
-
-## Validation plan
-
-1. Ingest the S002 ETF universe from Yahoo for the strategy's date range.
-2. Load the (private) tuned per-ETF config.
-3. Run the vector engine.
-4. Compare: CAGR, Sharpe, MaxDD, Win-Rate against the QC reference.
-
-A perfect match is not expected for v0.1 because:
-- Yahoo daily data differs from QC's adjusted feeds in ways that affect
-  thinly traded ETFs.
-- The vector model applies fills at close; QC fills at the open of the next
-  session via a scheduled pre-market routine.
-- Some indicators in S002 (e.g. KAMA, FRAMA, TRIX, NATR) are not yet
-  implemented — v0.1 covers WWMA/SMA/EMA/RSI/Z-score.
-
-The bar is: directional agreement on Sharpe/CAGR, with documented gaps.
-
-## CI
-
-GitHub Actions: `check`, `clippy -D warnings`, `fmt --check`, `test` on
-stable. PRs and pushes to `main` trigger the workflow.
-
-## Repo discipline
-
-- Public: platform code (`lbr`, `lbr-cli`), CI, README, this design doc.
-- Private (gitignored): **all** strategy code lives under `/private/` or
-  in a separate private repo — including generic strategy frameworks like
-  mean-reversion. The public platform has zero knowledge of any strategy.
-- Also gitignored: tuned configs (`configs/s002*.yaml`), data lake, results.
-
-## Future (v0.2+)
-
-- Alpaca data + execution adapters; event-driven engine; live mode.
-- Parquet cache (replacing CSV).
-- Pipeline DAG for factor research.
-- Walk-forward / CV folds as first-class objects.
-- Strategy Tree composability.
-- OrderTicket state machine + brokerage capability flags.
+[CI](../CI.md) covers complete current offline checks; [engine smoke](../crates/lbr/tests/engine_smoke.rs) is the supported runnable strategy example. Version 0.1.1 adds cache path validation, not a new market model. Live adapters, provenance certification and broad property/accounting tests remain future work.

@@ -1,0 +1,67 @@
+{
+  "scope": "Tracked/nonignored owned prose; network URLs not fetched; fenced code not interpreted as links.",
+  "counts": {
+    "documents": 7,
+    "canonical": 4,
+    "mixed": 0,
+    "retained": 3
+  },
+  "documents": [
+    {
+      "path": "CI.md",
+      "role": "canonical-current",
+      "title": "Development and CI",
+      "local_links": 1,
+      "workstation_local_references": 0,
+      "unavailable_links": []
+    },
+    {
+      "path": "README.md",
+      "role": "canonical-current",
+      "title": "lbr — local event-driven backtesting",
+      "local_links": 4,
+      "workstation_local_references": 0,
+      "unavailable_links": []
+    },
+    {
+      "path": "REVIEW_20261107.md",
+      "role": "retained-history-reference-or-evidence",
+      "title": "Offline self-review and next release — 2026-11-07",
+      "local_links": 0,
+      "workstation_local_references": 0,
+      "unavailable_links": []
+    },
+    {
+      "path": "docs/DOCUMENTATION_AUDIT.md",
+      "role": "canonical-current",
+      "title": "Documentation audit and design — 2026-11-07",
+      "local_links": 1,
+      "workstation_local_references": 0,
+      "unavailable_links": []
+    },
+    {
+      "path": "docs/design.md",
+      "role": "canonical-current",
+      "title": "Event-driven platform design and contracts",
+      "local_links": 2,
+      "workstation_local_references": 0,
+      "unavailable_links": []
+    },
+    {
+      "path": "review-evidence-20261107/clippy.txt",
+      "role": "retained-history-reference-or-evidence",
+      "title": "clippy.txt",
+      "local_links": 0,
+      "workstation_local_references": 0,
+      "unavailable_links": []
+    },
+    {
+      "path": "review-evidence-20261107/tests.txt",
+      "role": "retained-history-reference-or-evidence",
+      "title": "tests.txt",
+      "local_links": 0,
+      "workstation_local_references": 0,
+      "unavailable_links": []
+    }
+  ]
+}
