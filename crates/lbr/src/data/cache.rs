@@ -12,8 +12,17 @@ use std::path::{Path, PathBuf};
 
 use super::Bar;
 
-fn path_for(cache_dir: &Path, symbol: &str) -> PathBuf {
-    cache_dir.join(format!("{}.parquet", symbol.to_lowercase()))
+fn path_for(cache_dir: &Path, symbol: &str) -> Result<PathBuf> {
+    anyhow::ensure!(
+        !symbol.trim().is_empty()
+            && symbol != "."
+            && symbol != ".."
+            && !symbol
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '/' | '\\' | ':')),
+        "symbol must be a nonempty filename without path separators or control characters"
+    );
+    Ok(cache_dir.join(format!("{}.parquet", symbol.to_lowercase())))
 }
 
 fn bars_to_df(bars: &[Bar]) -> Result<DataFrame> {
@@ -64,8 +73,8 @@ fn df_to_bars(df: &DataFrame) -> Result<Vec<Bar>> {
 }
 
 pub fn save_cached(cache_dir: &Path, symbol: &str, bars: &[Bar]) -> Result<()> {
+    let path = path_for(cache_dir, symbol)?;
     std::fs::create_dir_all(cache_dir).with_context(|| format!("mkdir {}", cache_dir.display()))?;
-    let path = path_for(cache_dir, symbol);
     let mut df = bars_to_df(bars)?;
     let mut f = File::create(&path).with_context(|| format!("create {}", path.display()))?;
     ParquetWriter::new(&mut f)
@@ -76,7 +85,7 @@ pub fn save_cached(cache_dir: &Path, symbol: &str, bars: &[Bar]) -> Result<()> {
 }
 
 pub fn load_cached(cache_dir: &Path, symbol: &str) -> Result<Vec<Bar>> {
-    let path = path_for(cache_dir, symbol);
+    let path = path_for(cache_dir, symbol)?;
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -85,4 +94,40 @@ pub fn load_cached(cache_dir: &Path, symbol: &str) -> Result<Vec<Bar>> {
         .finish()
         .with_context(|| format!("reading Parquet {}", path.display()))?;
     df_to_bars(&df)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symbol_paths_stay_in_cache() {
+        let root = Path::new("cache");
+        for symbol in ["SPY", "^GSPC", "BRK.B", "BRK-B", "EURUSD=X"] {
+            assert_eq!(path_for(root, symbol).unwrap().parent(), Some(root));
+        }
+        for symbol in [
+            "",
+            " ",
+            ".",
+            "..",
+            "../escape",
+            "/tmp/escape",
+            "a/b",
+            "a\\b",
+            "C:escape",
+            "bad\0",
+        ] {
+            assert!(path_for(root, symbol).is_err(), "{symbol:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_symbol_fails_before_io() {
+        let root = std::env::temp_dir().join(format!("lbr-invalid-symbol-{}", std::process::id()));
+        assert!(!root.exists());
+        assert!(save_cached(&root, "../escape", &[]).is_err());
+        assert!(load_cached(&root, "../escape").is_err());
+        assert!(!root.exists());
+    }
 }
